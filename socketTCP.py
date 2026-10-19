@@ -411,9 +411,6 @@ class SocketTCP():
         self.cach = recv_msg[buff_size:]
         return recv_msg[:buff_size]
 
-    def send_using_go_back_n(self, msg):
-        pass
-
     def _recv_pack_go_back(self):
         try:
             recv_msg, _ = self.socket.recvfrom(self.buf_size)
@@ -439,3 +436,98 @@ class SocketTCP():
         except TimeoutError:
             self.debug_prints("error de timeout en recv")
             return self._recv_pack_go_back()
+    
+    def send_using_go_back_n(self, msg: bytes):
+        if self.seq == b"":
+            self.debug_prints("conexion no fue establecida")
+            return
+
+        MSS = 8
+        self.msg_len = MSS
+        self.buf_size = self.header_size + self.msg_len
+
+        # Partir el mensaje en trocitos
+        data_list = [str(len(msg)).encode()]
+        for i in range(0, len(msg), MSS):
+            data_list.append(msg[i:i+MSS])
+
+        # tamaño de ventana fijo igual a 8 segmentos.
+        window_size_segments = 8
+
+        initial_seq = int.from_bytes(self.seq, 'big')
+        data_window = SlidingWindowCC(window_size_segments, data_list, initial_seq)
+
+        base_index = 0
+        next_index = 0
+        total_segments = len(data_list)
+
+        # Configurar un timer para GBN en la posición 0 del SocketUDP
+        self.socket.set_timer_list_length(1)
+
+        while base_index < total_segments:
+
+            # Enviar todos los paquetes que caben en la ventana actual (hasta 8)
+            while next_index < base_index + data_window.window_size and next_index < total_segments:
+                seq = data_window.get_sequence_number(next_index - base_index)
+                data = data_window.get_data(next_index - base_index)
+
+                if seq is not None and data is not None:
+                    seq_bytes = seq.to_bytes(2, 'big')
+                    pack = self.create_segment(MensajeTCP(b"MSG", seq_bytes, data))
+                    
+                    # sendto inicia automáticamente el timer si no está corriendo
+                    self.socket.sendto(pack, self.destino, timer_index=0)
+
+                next_index += 1
+
+            # Esperar confirmación (ACK) o Timeout
+            try:
+                recv_msg, addr = self.socket.recvfrom(self.buf_size)
+                parsed = self.parse_segment(recv_msg)
+
+                if parsed.tipo == b"ACK":
+                    # El ACK nos dice el "siguiente byte que espera" el receptor
+                    ack_seq = int.from_bytes(parsed.seq, 'big')
+                    
+                    advanced = False
+                    
+                    # 3. Lógica de ACK Acumulativo
+                    # Avanzamos la ventana de 1 en 1 mientras el ACK sea mayor al inicio de la ventana
+                    while True:
+                        base_seq = data_window.get_sequence_number(0)
+                        if base_seq is None:
+                            break
+                        
+                        if ack_seq > base_seq:
+                            data_window.move_window(1)
+                            base_index += 1
+                            advanced = True
+                        else:
+                            break
+
+                    # Si la ventana avanzó, detenemos el timer.
+                    if advanced:
+                        self.socket.stop_timer(0)
+                        
+                        # Si aún quedan paquetes en vuelo en la nueva ventana, reiniciamos el timer
+                        if base_index < total_segments and base_index < next_index:
+                            seq_base = data_window.get_sequence_number(0)
+                            data_base = data_window.get_data(0)
+                            if seq_base is not None and data_base is not None:
+                                pack = self.create_segment(MensajeTCP(b"MSG", seq_base.to_bytes(2, 'big'), data_base))
+                                self.socket.sendto(pack, self.destino, timer_index=0)
+
+                elif parsed.tipo == b"FIN":
+                    self.recv_close()
+                    return
+
+            except TimeoutError:
+                # Perdidas (Timeout en Go-Back-N puro)
+                self.debug_prints("Timeout en GBN! Reenviando la ventana entera...")
+                
+                # Retrocedemos next_index al base_index para volver a mandar los 8 (o menos) paquetes
+                next_index = base_index
+
+        # Limpieza al finalizar
+        self.socket.stop_timer(0)
+        self.seq = ack_seq.to_bytes(2, 'big')

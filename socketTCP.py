@@ -1,5 +1,6 @@
 import socket
 from random import randint
+from slidingWindowCC import SlidingWindowCC
 
 class MensajeTCP():
     """
@@ -180,28 +181,23 @@ class SocketTCP():
             self.debug_prints("conexion establecida!!")
             return (new_socket, new_addr)
 
-    def send(self, msg: bytes):
-        """
-        envía un mensaje completo a través del socket.
-        el primer mensaje lleva el largo del mensaje en el contenido.
-        asume que la conexión fue establecida
+    def send(self, msg: bytes , mode="stop_and_wait"):
+        if mode == "stop_and_wait":
+            self.send_using_stop_and_wait(msg)
+        elif mode == "go_back_n":
+            self.send_using_go_back_n(msg)
 
-        recibe:
-            msg (bytes): el mensaje a enviar
-        """
-        if self.seq == b"":
-            self.debug_prints("conexion no fue establecida")
-            return
-        self.debug_prints(f"mensaje completo por enviar: {msg.decode()}")
+    def recv(self, buff_size, mode="stop_and_wait"):
+        if mode == "stop_and_wait":
+            self.recv_using_stop_and_wait(buff_size) 
+        elif mode == "go_back_n":
+            self.recv_using_go_back_n(buff_size)
 
-        # enviar el primer mensaje que contiene el tamaño del mensaje
-        full_msg_len = len(msg)
-        self._send_pack(str(full_msg_len).encode())
-        i = 0
-        while i < full_msg_len:
-            # enviar 16 bytes de mensaje
-            self._send_pack(msg[i:i+self.msg_len])
-            i += self.msg_len
+    def recv_using_go_back_n(self, buff_size):
+        pass
+
+    def send_using_go_back_n(self, msg):
+        pass
 
     def _send_pack(self, content: bytes):
 
@@ -232,30 +228,6 @@ class SocketTCP():
             # caso 2: no se recibe el mensaje de confirmación
             except TimeoutError:
                 self.debug_prints(f"error de timeout en send")
-        
-    def recv(self, buff_size):
-        # caso 1: primer mensaje (msg_len)
-        if self.expecting <= 0:
-            try:
-                recvd = self._recv_pack().decode()
-                if recvd is not None:
-                    self.expecting = int(recvd)
-                else:
-                    return self.recv(buff_size)
-            except TimeoutError:
-                self.debug_prints("timeout error al recibir largo del mensaje")
-                return self.recv(buff_size)
-        # caso 2: continuacion del mensaje
-        recv_msg = self.cach
-        pack_len = min(self.expecting, buff_size)
-        while pack_len > 0:
-            recv_content = self._recv_pack()
-            if recv_content != None:
-                self.expecting -= len(recv_content)
-                pack_len -= len(recv_content)
-                recv_msg += recv_content
-        self.cach = recv_msg[buff_size:]
-        return recv_msg[:buff_size]
             
     def _recv_pack(self):
         try:
@@ -343,3 +315,51 @@ class SocketTCP():
     def debug_prints(self, msg: str):
         if self.debug == True:
             print(msg)
+
+
+    def send_using_stop_and_wait(self, msg: bytes):
+        """
+        envía un mensaje completo a través del socket.
+        el primer mensaje lleva el largo del mensaje en el contenido.
+        asume que la conexión fue establecida
+
+        recibe:
+            msg (bytes): el mensaje a enviar
+        """
+        if self.seq == b"":
+            self.debug_prints("conexion no fue establecida")
+            return
+        self.debug_prints(f"mensaje completo por enviar: {msg.decode()}")
+
+        # enviar el primer mensaje que contiene el tamaño del mensaje
+        full_msg_len = len(msg)
+        self._send_pack(str(full_msg_len).encode())
+        i = 0
+        while i < full_msg_len:
+            # enviar 16 bytes de mensaje
+            self._send_pack(msg[i:i+self.msg_len])
+            i += self.msg_len
+
+    def recv_using_stop_and_wait(self, buff_size):
+        # caso 1: primer mensaje (msg_len)
+        if self.expecting <= 0:
+            try:
+                recvd = self._recv_pack().decode()
+                if recvd is not None:
+                    self.expecting = int(recvd)
+                else:
+                    return self.recv_using_stop_and_wait(buff_size)
+            except TimeoutError:
+                self.debug_prints("timeout error al recibir largo del mensaje")
+                return self.recv_using_stop_and_wait(buff_size)
+        # caso 2: continuacion del mensaje
+        recv_msg = self.cach
+        pack_len = min(self.expecting, buff_size)
+        while pack_len > 0:
+            recv_content = self._recv_pack()
+            if recv_content != None:
+                self.expecting -= len(recv_content)
+                pack_len -= len(recv_content)
+                recv_msg += recv_content
+        self.cach = recv_msg[buff_size:]
+        return recv_msg[:buff_size]

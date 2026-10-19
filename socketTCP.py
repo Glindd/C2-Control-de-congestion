@@ -193,11 +193,6 @@ class SocketTCP():
         elif mode == "go_back_n":
             self.recv_using_go_back_n(buff_size)
 
-    def recv_using_go_back_n(self, buff_size):
-        pass
-
-    def send_using_go_back_n(self, msg):
-        pass
 
     def _send_pack(self, content: bytes):
 
@@ -363,3 +358,10 @@ class SocketTCP():
                 recv_msg += recv_content
         self.cach = recv_msg[buff_size:]
         return recv_msg[:buff_size]
+
+    
+    def recv_using_go_back_n(self, buff_size):
+        pass
+
+    def send_using_go_back_n(self, msg):
+        pass

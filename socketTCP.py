@@ -377,7 +377,65 @@ class SocketTCP():
 
     
     def recv_using_go_back_n(self, buff_size):
-        pass
+
+        # caso 1: primer mensaje (contiene el largo)
+        if self.expecting <= 0:
+            recvd: bytes = self._recv_pack_go_back()
+            if recvd is not None:
+                self.expecting = int(recvd.decode())
+            else:
+                return self.recv_using_go_back_n(buff_size)
+
+        # caso 2: resto del mensaje
+        recv_msg = self.cach
+        pack_len = min(self.expecting, buff_size)
+        if len(recv_msg) >= pack_len:
+            self.cach = recv_msg[buff_size:]
+            return recv_msg[:buff_size]
+        while pack_len > 0:
+            recv_content = self._recv_pack_go_back()
+            if recv_content != None:
+                self.expecting -= len(recv_content)
+                pack_len -= len(recv_content)
+                recv_msg += recv_content
+        if self.expecting == 0 and len(self.cach) == 0:
+            self.debug_prints("dentro de condicion esperando fin")
+            for i in range(3):
+                try:
+                    msg, _ = self.socket.recvfrom(self.buf_size)
+                    if self.parse_segment(msg).tipo == b"FIN":
+                        self.recv_close()
+                    break
+                except TimeoutError:
+                    self.debug_prints("Error de timeout al esperar mensaje fin dentro de recv")
+        self.cach = recv_msg[buff_size:]
+        return recv_msg[:buff_size]
 
     def send_using_go_back_n(self, msg):
         pass
+
+    def _recv_pack_go_back(self):
+        try:
+            recv_msg, _ = self.socket.recvfrom(self.buf_size)
+            parsed = self.parse_segment(recv_msg)
+            if parsed.seq <= self.seq:
+                self.debug_prints(f"secuencia incorrecta, {int.from_bytes(parsed.seq)} <= {int.from_bytes(self.seq)}")
+                self.debug_prints("reenviando ultimo mensaje")
+                self.socket.sendto(self.last_sent, self.destino)
+                return self._recv_pack_go_back()
+            elif parsed.tipo == b"FIN":
+                self.debug_prints("se ha recibido un mensaje tipo FIN")
+                self.recv_close()
+                return
+            elif parsed.tipo != b"MSG":
+                self.debug_prints(f"tipo incorrecto, recibido: {parsed.tipo}")
+                return
+            else:
+                self.seq = (int.from_bytes(parsed.seq) + len(parsed.msg)).to_bytes(2)
+                to_send = self.create_segment(MensajeTCP(b"ACK", self.seq))
+                self.socket.sendto(to_send, self.destino)
+                self.last_sent = to_send
+                return parsed.msg
+        except TimeoutError:
+            self.debug_prints("error de timeout en recv")
+            return self._recv_pack_go_back()

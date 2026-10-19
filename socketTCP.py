@@ -47,7 +47,7 @@ class SocketTCP():
         self.socket.settimeout(5) # espera 5 segundos antes de reenviar
         self.cach = b""
         self.last_sent = b""
-        self.debug = False
+        self.debug = True
 
     @staticmethod
     def parse_segment(msg: bytes):
@@ -285,6 +285,7 @@ class SocketTCP():
                 break
 
         self.socket.close()
+        self.seq = b""
 
     def recv_close(self):
         to_send = self.create_segment(MensajeTCP(b"A+F", self.seq))
@@ -306,6 +307,7 @@ class SocketTCP():
                 break
 
         self.socket.close()
+        self.seq = b""
 
     def debug_prints(self, msg: str):
         if self.debug == True:
@@ -350,14 +352,25 @@ class SocketTCP():
         # caso 2: continuacion del mensaje
         recv_msg = self.cach
         pack_len = min(self.expecting, buff_size)
+        if len(recv_msg) >= pack_len:
+            self.cach = recv_msg[buff_size:]
+            return recv_msg[:buff_size]
         while pack_len > 0:
             recv_content = self._recv_pack()
             if recv_content != None:
                 self.expecting -= len(recv_content)
                 pack_len -= len(recv_content)
                 recv_msg += recv_content
+        if self.expecting == 0 and len(self.cach) == 0:
+            try:
+                msg, _ = self.socket.recvfrom(self.buf_size)
+                if self.parse_segment(msg).tipo == b"FIN":
+                    self.recv_close()
+            except TimeoutError:
+                self.debug_prints("Error de timeout al esperar mensaje fin dentro de recv")
         self.cach = recv_msg[buff_size:]
         return recv_msg[:buff_size]
+
 
     
     def recv_using_go_back_n(self, buff_size):

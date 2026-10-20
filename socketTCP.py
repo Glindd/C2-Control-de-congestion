@@ -1,6 +1,7 @@
-import socket
 from random import randint
 from slidingWindowCC import SlidingWindowCC
+from socketUDP import SocketUDP
+from CongestionControl import CongestionControl
 
 class MensajeTCP():
     """
@@ -37,7 +38,7 @@ class SocketTCP():
     """
 
     def __init__(self):
-        self.socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.socket = SocketUDP()
         self.destino = ('localhost', 8000)
         self.seq = b""
         self.header_size = 5
@@ -48,6 +49,8 @@ class SocketTCP():
         self.cach = b""
         self.last_sent = b""
         self.debug = True
+        self.congestion_controler = CongestionControl(8)
+        self.congestion_control_on = True
 
     @staticmethod
     def parse_segment(msg: bytes):
@@ -75,6 +78,9 @@ class SocketTCP():
         """
         msg = data.tipo + data.seq + data.msg #TODO: agregar padding a seq
         return msg
+
+    def set_congestion_control_on(self, val: bool = True):
+        self.congestion_control_on = val
 
     def bind(self, addr):
         """
@@ -104,6 +110,7 @@ class SocketTCP():
                     self.socket.sendto(to_send, addr)
                     # recibir un mensaje devuelta
                     rcv_msg, serv_addr = self.socket.recvfrom(19) # TODO: esta direccion deberia ser la del nuevo socket?
+                    self.socket.stop_timer()
                     break
                 except TimeoutError:
                     self.debug_prints("timeout en connect (mensaje confirmacion)")
@@ -165,6 +172,7 @@ class SocketTCP():
                     new_socket.socket.sendto(to_send, addr)
                     # recibir mensaje tipo ack
                     recv_msg, addr_2 = new_socket.socket.recvfrom(self.buf_size)
+                    new_socket.socket.stop_timer()
                     parsed = self.parse_segment(recv_msg)
                     if parsed.tipo == b"MSG":
                         self.debug_prints("hanshake incompleto, pero continuando")
@@ -172,6 +180,8 @@ class SocketTCP():
                     elif parsed.seq <= new_socket.seq:
                         self.debug_prints("error de secuencia en accept (mensaje de confirmacion)")
                     elif parsed.tipo == b"ACK":
+                        #new_socket.seq = (int.from_bytes(parsed.seq) + 1).to_bytes(2)
+                        new_socket.seq = parsed.seq
                         break
                     else:
                         continue
@@ -183,15 +193,15 @@ class SocketTCP():
 
     def send(self, msg: bytes , mode="stop_and_wait"):
         if mode == "stop_and_wait":
-            self.send_using_stop_and_wait(msg)
+            return self.send_using_stop_and_wait(msg)
         elif mode == "go_back_n":
-            self.send_using_go_back_n(msg)
+            return self.send_using_go_back_n(msg)
 
     def recv(self, buff_size, mode="stop_and_wait"):
         if mode == "stop_and_wait":
-            self.recv_using_stop_and_wait(buff_size) 
+            return self.recv_using_stop_and_wait(buff_size) 
         elif mode == "go_back_n":
-            self.recv_using_go_back_n(buff_size)
+            return self.recv_using_go_back_n(buff_size)
 
 
     def _send_pack(self, content: bytes):
@@ -200,7 +210,6 @@ class SocketTCP():
         msg_tcp = MensajeTCP(tipo, self.seq, content)
         pack = self.create_segment(msg_tcp)
         
-
         while True:
             # caso 1: todo bien
             try:
@@ -258,6 +267,7 @@ class SocketTCP():
                 self.debug_prints(f"enviando mensaje fin")
                 self.socket.sendto(to_send, self.destino)
                 recv_msg, _ = self.socket.recvfrom(self.buf_size)
+                self.socket.stop_timer()
                 parsed = self.parse_segment(recv_msg)
                 if parsed.tipo == b"A+F":
                     self.seq = (int.from_bytes(parsed.seq) + 1).to_bytes(2)
@@ -275,8 +285,6 @@ class SocketTCP():
         while tries < 3:
             try:
                 self.socket.sendto(to_send, self.destino)
-                self.debug_prints("mensaje enviado")
-                self.socket.recvfrom(self.buf_size)
             except TimeoutError:
                 tries += 1
                 self.debug_prints(f"timeout error en close, intento # {tries}")
@@ -284,6 +292,7 @@ class SocketTCP():
                 self.debug_prints("otro error en close, quizas el socket ya se cerró??")
                 break
 
+        self.socket.stop_timer()
         self.socket.close()
         self.seq = b""
 
@@ -295,6 +304,7 @@ class SocketTCP():
                 self.debug_prints("enviando mensaje tipo A+F")
                 self.socket.sendto(to_send, self.destino)
                 recv_msg, _ = self.socket.recvfrom(self.buf_size)
+                self.socket.stop_timer()
                 parsed = self.parse_segment(recv_msg)
                 if parsed.tipo == b"ACK" and self.seq < parsed.seq:
                     self.debug_prints("mensaje tipo ACK recibido")
@@ -380,9 +390,11 @@ class SocketTCP():
 
         # caso 1: primer mensaje (contiene el largo)
         if self.expecting <= 0:
+            
             recvd: bytes = self._recv_pack_go_back()
             if recvd is not None:
                 self.expecting = int(recvd.decode())
+                self.debug_prints(f"largo del mensaje: {self.expecting}")
             else:
                 return self.recv_using_go_back_n(buff_size)
 
@@ -395,6 +407,7 @@ class SocketTCP():
         while pack_len > 0:
             recv_content = self._recv_pack_go_back()
             if recv_content != None:
+                print(f"contenido recibido: {recv_content}")
                 self.expecting -= len(recv_content)
                 pack_len -= len(recv_content)
                 recv_msg += recv_content
@@ -415,8 +428,8 @@ class SocketTCP():
         try:
             recv_msg, _ = self.socket.recvfrom(self.buf_size)
             parsed = self.parse_segment(recv_msg)
-            if parsed.seq <= self.seq:
-                self.debug_prints(f"secuencia incorrecta, {int.from_bytes(parsed.seq)} <= {int.from_bytes(self.seq)}")
+            if parsed.seq != self.seq:
+                self.debug_prints(f"secuencia incorrecta, {int.from_bytes(parsed.seq)} != {int.from_bytes(self.seq)}")
                 self.debug_prints("reenviando ultimo mensaje")
                 self.socket.sendto(self.last_sent, self.destino)
                 return self._recv_pack_go_back()
@@ -438,6 +451,8 @@ class SocketTCP():
             return self._recv_pack_go_back()
     
     def send_using_go_back_n(self, msg: bytes):
+        self.debug_prints("enviando con go_back_n")
+
         if self.seq == b"":
             self.debug_prints("conexion no fue establecida")
             return
@@ -474,8 +489,10 @@ class SocketTCP():
                 if seq is not None and data is not None:
                     seq_bytes = seq.to_bytes(2, 'big')
                     pack = self.create_segment(MensajeTCP(b"MSG", seq_bytes, data))
+                    self.debug_prints(f"enviando chunk: {data.decode()}")
                     
                     # sendto inicia automáticamente el timer si no está corriendo
+                    self.socket.stop_timer()
                     self.socket.sendto(pack, self.destino, timer_index=0)
 
                 next_index += 1
@@ -529,5 +546,5 @@ class SocketTCP():
                 next_index = base_index
 
         # Limpieza al finalizar
-        self.socket.stop_timer(0)
+        #self.socket.stop_timer(0)
         self.seq = ack_seq.to_bytes(2, 'big')

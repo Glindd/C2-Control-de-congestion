@@ -475,20 +475,29 @@ class SocketTCP():
         for i in range(0, len(msg), MSS):
             data_list.append(msg[i:i+MSS])
 
-        # tamaño de ventana fijo igual a 8 segmentos.
-        window_size_segments = 8
-
+        if self.congestion_control_on:
+            window_size_segments = self.congestion_controler.get_MSS_in_cwnd()
+        else:
+            window_size_segments = 8
+        
         initial_seq = int.from_bytes(self.seq, 'big')
         data_window = SlidingWindowCC(window_size_segments, data_list, initial_seq)
 
+        self.debug_prints(f"controller on: {self.congestion_control_on}; window_size: {window_size_segments}; MSS: {MSS}")
+
         base_index = 0
-        next_index = int(base_index)
+        next_index = 0
         total_segments = len(data_list)
 
         # Configurar un timer para GBN en la posición 0 del SocketUDP
         self.socket.set_timer_list_length(1)
 
         while base_index < total_segments:
+
+            if self.congestion_control_on:
+                window_size_segments = self.congestion_controler.get_MSS_in_cwnd()
+            else:
+                window_size_segments = 8
 
             # Enviar todos los paquetes que caben en la ventana actual (hasta 8)
             while next_index < base_index + data_window.window_size and next_index < total_segments:
@@ -530,6 +539,11 @@ class SocketTCP():
                             data_window.move_window(1)
                             base_index += 1
                             advanced = True
+
+                            if self.congestion_control_on:
+                                self.congestion_controler.event_ack_received()
+
+                                self.debug_prints(f"controller on: {self.congestion_control_on}; window_size: {window_size_segments}; MSS: {MSS}")
                         else:
                             break
 
@@ -550,6 +564,9 @@ class SocketTCP():
                     return
 
             except TimeoutError:
+                if self.congestion_control_on:
+                    self.congestion_controler.event_timeout()
+                    self.debug_prints(f"controller on: {self.congestion_control_on}; window_size: {window_size_segments}; MSS: {MSS}")
                 # Perdidas (Timeout en Go-Back-N puro)
                 self.debug_prints("Timeout en GBN! Reenviando la ventana entera...")
 

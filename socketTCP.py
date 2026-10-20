@@ -114,6 +114,7 @@ class SocketTCP():
                     break
                 except TimeoutError:
                     self.debug_prints("timeout en connect (mensaje confirmacion)")
+                    self.socket.stop_timer()
                     continue
 
             # verificar ack, syn y addr
@@ -187,6 +188,7 @@ class SocketTCP():
                         continue
                 except TimeoutError:
                     self.debug_prints("error de timeout en accept (mensaje de confirmacion)")
+                    self.socket.stop_timer()
 
             self.debug_prints("conexion establecida!!")
             return (new_socket, new_addr)
@@ -232,6 +234,7 @@ class SocketTCP():
             # caso 2: no se recibe el mensaje de confirmación
             except TimeoutError:
                 self.debug_prints(f"error de timeout en send")
+                self.socket.stop_timer()
             
     def _recv_pack(self):
         try:
@@ -257,6 +260,7 @@ class SocketTCP():
                 return parsed.msg
         except TimeoutError:
             self.debug_prints("error de timeout en recv")
+            self.socket.stop_timer()
             return self._recv_pack()
 
     def close(self):
@@ -275,6 +279,7 @@ class SocketTCP():
 
             except TimeoutError:
                 self.debug_prints("error de timeout en fin")
+                self.socket.stop_timer()
                 tries += 1
             
         if tries < 3:
@@ -286,6 +291,7 @@ class SocketTCP():
             try:
                 self.socket.sendto(to_send, self.destino)
             except TimeoutError:
+                self.socket.stop_timer()
                 tries += 1
                 self.debug_prints(f"timeout error en close, intento # {tries}")
             except:
@@ -311,6 +317,7 @@ class SocketTCP():
                     break
             except TimeoutError:
                 self.debug_prints("timeout error en recv_close")
+                self.socket.stop_timer()
                 tries += 1
             except: 
                 self.debug_prints("otro error en close, quizas el socket ya se cerró??")
@@ -358,6 +365,7 @@ class SocketTCP():
                     return self.recv_using_stop_and_wait(buff_size)
             except TimeoutError:
                 self.debug_prints("timeout error al recibir largo del mensaje")
+                self.socket.stop_timer()
                 return self.recv_using_stop_and_wait(buff_size)
         # caso 2: continuacion del mensaje
         recv_msg = self.cach
@@ -448,6 +456,7 @@ class SocketTCP():
                 return parsed.msg
         except TimeoutError:
             self.debug_prints("error de timeout en recv")
+            self.socket.stop_timer()
             return self._recv_pack_go_back()
     
     def send_using_go_back_n(self, msg: bytes):

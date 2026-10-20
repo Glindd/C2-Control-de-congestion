@@ -292,7 +292,7 @@ class SocketTCP():
                 self.debug_prints("otro error en close, quizas el socket ya se cerró??")
                 break
 
-        self.socket.stop_timer()
+        # self.socket.stop_timer()
         self.socket.close()
         self.seq = b""
 
@@ -351,9 +351,9 @@ class SocketTCP():
         # caso 1: primer mensaje (msg_len)
         if self.expecting <= 0:
             try:
-                recvd = self._recv_pack().decode()
+                recvd = self._recv_pack()
                 if recvd is not None:
-                    self.expecting = int(recvd)
+                    self.expecting = int(recvd.decode())
                 else:
                     return self.recv_using_stop_and_wait(buff_size)
             except TimeoutError:
@@ -473,7 +473,7 @@ class SocketTCP():
         data_window = SlidingWindowCC(window_size_segments, data_list, initial_seq)
 
         base_index = 0
-        next_index = 0
+        next_index = int(base_index)
         total_segments = len(data_list)
 
         # Configurar un timer para GBN en la posición 0 del SocketUDP
@@ -492,8 +492,10 @@ class SocketTCP():
                     self.debug_prints(f"enviando chunk: {data.decode()}")
                     
                     # sendto inicia automáticamente el timer si no está corriendo
-                    self.socket.stop_timer()
-                    self.socket.sendto(pack, self.destino, timer_index=0)
+                    if next_index == base_index:
+                        self.socket.sendto(pack, self.destino, timer_index=0)
+                    else:
+                        self.socket.sendto(pack, self.destino)
 
                 next_index += 1
 
@@ -527,7 +529,7 @@ class SocketTCP():
                         self.socket.stop_timer(0)
                         
                         # Si aún quedan paquetes en vuelo en la nueva ventana, reiniciamos el timer
-                        if base_index < total_segments and base_index < next_index:
+                        if base_index < total_segments:
                             seq_base = data_window.get_sequence_number(0)
                             data_base = data_window.get_data(0)
                             if seq_base is not None and data_base is not None:
@@ -541,10 +543,29 @@ class SocketTCP():
             except TimeoutError:
                 # Perdidas (Timeout en Go-Back-N puro)
                 self.debug_prints("Timeout en GBN! Reenviando la ventana entera...")
+
+                self.socket.stop_timer(0)
+                
+                for idx in range(base_index, next_index):
+                    seq = data_window.get_sequence_number(idx - base_index)
+                    data = data_window.get_data(idx - base_index)
+                    if seq is not None and data is not None:
+                        seq_bytes = (seq % 65536).to_bytes(2, 'big')
+                        pack = self.create_segment(MensajeTCP(b"MSG", seq_bytes, data))
+                        self.debug_prints(f"Reenviando chunk index {idx}: {data.decode()}")
+                        
+                        # El primero de la retransmisión reactiva el temporizador
+                        if idx == base_index:
+                            self.socket.sendto(pack, self.destino, timer_index=0)
+                        else:
+                            self.socket.sendto(pack, self.destino)
+
+        if base_index > 0 or total_segments == 0:
+            self.seq = (ack_seq % 65536).to_bytes(2, 'big')
                 
                 # Retrocedemos next_index al base_index para volver a mandar los 8 (o menos) paquetes
-                next_index = base_index
+                #next_index = base_index
 
         # Limpieza al finalizar
         #self.socket.stop_timer(0)
-        self.seq = ack_seq.to_bytes(2, 'big')
+#        self.seq = ack_seq.to_bytes(2, 'big')
